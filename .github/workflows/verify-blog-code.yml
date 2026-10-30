@@ -1,0 +1,51 @@
+name: verify-blog-code
+on:
+  push:
+    paths:
+      - 'posts/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify changed post folders
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            folders=$(find posts -mindepth 1 -maxdepth 1 -type d)
+          else
+            base="${{ github.event.before }}"
+            if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+              base=$(git rev-parse HEAD^ 2>/dev/null || echo "")
+            fi
+            if [ -n "$base" ]; then
+              folders=$(git diff --name-only "$base" "${{ github.sha }}" | awk -F/ '/^posts\// {print $1"/"$2}' | sort -u)
+            else
+              folders=$(find posts -mindepth 1 -maxdepth 1 -type d)
+            fi
+          fi
+          if [ -z "$folders" ]; then echo "No post folders changed"; exit 0; fi
+          python -m pip install --upgrade pip
+          for folder in $folders; do
+            if [ -d "$folder" ]; then
+              echo "::group::$folder"
+              python -m compileall -q "$folder"
+              if [ -f "$folder/requirements.txt" ]; then
+                python -m pip install -r "$folder/requirements.txt"
+              fi
+              if find "$folder" \( -name 'test_*.py' -o -name '*_test.py' \) | grep -q .; then
+                python -m pip install pytest
+                (cd "$folder" && python -m pytest -q)
+              fi
+              echo "::endgroup::"
+            fi
+          done
